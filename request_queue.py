@@ -39,8 +39,8 @@ class LLMRequestQueue:
         if delay_between_requests == 1.0 and max_concurrent == 6:
             model_name = os.getenv("STRIX_LLM", "")
             if "anthropic" in model_name.lower() or "claude" in model_name.lower():
-                delay_between_requests = 1.5
-                max_concurrent = 3
+                delay_between_requests = 3.0
+                max_concurrent = 1
         
         self.max_concurrent = max_concurrent
         self.delay_between_requests = delay_between_requests
@@ -62,6 +62,11 @@ class LLMRequestQueue:
                 now = time.time()
                 time_since_last = now - self._last_request_time
                 sleep_needed = max(0, self.delay_between_requests - time_since_last)
+                
+                model_name = os.getenv("STRIX_LLM", "")
+                if "anthropic" in model_name.lower() or "claude" in model_name.lower():
+                    sleep_needed = sleep_needed * 1.1
+                
                 self._last_request_time = now + sleep_needed
 
             if sleep_needed > 0:
@@ -78,11 +83,18 @@ class LLMRequestQueue:
         reraise=True,
     )
     async def _reliable_request(self, completion_args: dict[str, Any]) -> ModelResponse:
-        response = completion(**completion_args, stream=False)
-        if isinstance(response, ModelResponse):
-            return response
-        self._raise_unexpected_response()
-        raise RuntimeError("Unreachable code")
+        try:
+            response = completion(**completion_args, stream=False)
+            if isinstance(response, ModelResponse):
+                return response
+            self._raise_unexpected_response()
+            raise RuntimeError("Unreachable code")
+        except litellm.RateLimitError as e:
+            model_name = os.getenv("STRIX_LLM", "")
+            if "anthropic" in model_name.lower() or "claude" in model_name.lower():
+                logger.warning(f"Rate limit hit, waiting 60s before retry: {e}")
+                await asyncio.sleep(60)
+            raise
 
     def _raise_unexpected_response(self) -> None:
         raise RuntimeError("Unexpected response type")
